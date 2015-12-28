@@ -22,15 +22,12 @@ import com.marketflip.shared.shopper.MF_ShopperDAO;
  * avoid second pull from DB
  * 
  * @author highball
- *         create max_blockingqueue_threads and subtract from max_threads to force sharing between
- *         bq & futures
- * @param <V>
  *
  */
-public class MFA_ShopperManager<V> implements Runnable {
+public class MFA_ShopperManager implements Runnable {
 
-	private BlockingQueue											bq;
-	private int														blockingQueueAdditionsCount;
+	private BlockingQueue<ArrayList<MF_PricePoint>>					bq;
+	private int														completedBQAdditionsCount;
 	private int														completedFuturesCount;
 	private ArrayList<String>										arrayListOfShoppers;						// TODO turn to shopper TODO get from database
 	private ArrayList<ArrayList<MF_PricePoint>>						arrayListOfPricePointsArrayListsPending;
@@ -39,19 +36,23 @@ public class MFA_ShopperManager<V> implements Runnable {
 	private ArrayList<Future<MFA_ShopperManager_BQAdditionFuture>>	arrayListOfBQFutures;
 	private ArrayList<Future<MFA_ShopperCrawler>>					arrayListOfCrawlerFutures;
 	private int														shopperLimit;
+	private MF_ShopperDAO											shopperDAO;
+	private boolean													isClosed;
 	public static final int											MFA_SHOPPER_MANAGER_MAX_THREAD_COUNT	= 6;
 	public static final int											MFA_SHOPPER_MANAGER_MAX_BQ_THREAD_COUNT	= 2;
 
 	public MFA_ShopperManager() {
+		this.arrayListOfBQFutures = new ArrayList<Future<MFA_ShopperManager_BQAdditionFuture>>();
+		this.arrayListOfCrawlerFutures = new ArrayList<Future<MFA_ShopperCrawler>>();
+		this.arrayListOfPricePointsArrayListsInProgress = new ArrayList<ArrayList<MF_PricePoint>>();
+		this.arrayListOfPricePointsArrayListsPending = new ArrayList<ArrayList<MF_PricePoint>>();
+		this.arrayListOfShoppers = new ArrayList<String>();
 		this.bq = null;
 		this.completedFuturesCount = 0;
 		this.executor = Executors.newFixedThreadPool(MFA_SHOPPER_MANAGER_MAX_THREAD_COUNT);
-		this.arrayListOfPricePointsArrayListsInProgress = new ArrayList<ArrayList<MF_PricePoint>>();
-		this.arrayListOfPricePointsArrayListsPending = new ArrayList<ArrayList<MF_PricePoint>>();
-		this.arrayListOfCrawlerFutures = new ArrayList<Future<MFA_ShopperCrawler>>();
-		this.arrayListOfBQFutures = new ArrayList<Future<MFA_ShopperManager_BQAdditionFuture>>();
-		this.arrayListOfShoppers = new ArrayList<String>();
+		this.shopperDAO = null;
 		this.shopperLimit = -1;
+		this.isClosed = false;
 	}
 
 	public MFA_ShopperManager(BlockingQueue bq) {
@@ -59,17 +60,34 @@ public class MFA_ShopperManager<V> implements Runnable {
 		this.bq = bq;
 	}
 
-	public MFA_ShopperManager(BlockingQueue bq, int futuresLimit) {
+	public MFA_ShopperManager(BlockingQueue bq, int shopperLimit) {
 		this(bq);
-		this.shopperLimit = futuresLimit;
+		this.shopperLimit = shopperLimit;
 	}
 
-	public MFA_ShopperManager(BlockingQueue bq, int futuresLimit, boolean isMock) {
-		this(bq, futuresLimit);
+	public MFA_ShopperManager(BlockingQueue bq, int shopperLimit, boolean isMock) {
+		this(bq, shopperLimit);
 		if (isMock) {
-			for (int shoppers = 0; shoppers < futuresLimit; shoppers++) {
-				arrayListOfShoppers.add("shopper" + shoppers);
+			for (int shoppers = 0; shoppers < shopperLimit; shoppers++) {
+				this.arrayListOfShoppers.add("shopper" + shoppers);
 			}
+			this.shopperDAO = new MF_ShopperDAO(true);
+		}
+		else {
+			this.shopperDAO = new MF_ShopperDAO(false);
+		}
+	}
+
+	public void close() {
+		if (isClosed) {
+			return;
+		}
+		else {
+			// shutdown to finish all tasks
+			executor.shutdown();
+			// close and finalize DAO
+			shopperDAO.close();
+			isClosed = true;
 		}
 	}
 
@@ -87,7 +105,7 @@ public class MFA_ShopperManager<V> implements Runnable {
 							.getPricePointArrayList();
 					arrayListOfPricePointsArrayListsInProgress.remove(pricePointArrayList);
 					arrayListOfBQFutures.remove(future);
-					blockingQueueAdditionsCount++;
+					completedBQAdditionsCount++;
 				}
 				catch (InterruptedException e) {
 					// TODO Auto-generated catch block
@@ -136,12 +154,13 @@ public class MFA_ShopperManager<V> implements Runnable {
 		while (arrayListOfBQFutures.size() < MFA_SHOPPER_MANAGER_MAX_BQ_THREAD_COUNT
 				&& !arrayListOfPricePointsArrayListsPending.isEmpty()
 				&& bq.remainingCapacity() > 0) {
+			ArrayList<MF_PricePoint> transferPPAL = arrayListOfPricePointsArrayListsPending
+					.remove(0);
 			// GET the arrayList to create future for PUTTING to blocking queue 
-			arrayListOfBQFutures.add(executor.submit(new MFA_ShopperManager_BQAdditionFuture(
-					arrayListOfPricePointsArrayListsPending.get(0))));
+			arrayListOfBQFutures
+					.add(executor.submit(new MFA_ShopperManager_BQAdditionFuture(transferPPAL)));
 			// REMOVE arrayList to ensure single future submissions 
-			arrayListOfPricePointsArrayListsInProgress
-					.add(arrayListOfPricePointsArrayListsPending.remove(0));
+			arrayListOfPricePointsArrayListsInProgress.add(transferPPAL);
 		}
 	}
 
@@ -156,6 +175,22 @@ public class MFA_ShopperManager<V> implements Runnable {
 				&& !arrayListOfShoppers.isEmpty()) {
 			arrayListOfCrawlerFutures
 					.add(executor.submit(new MFA_ShopperCrawler(arrayListOfShoppers.remove(0))));
+		}
+	}
+
+	@Override
+	public void finalize() {
+		try {
+			close();
+		}
+		finally {
+			try {
+				super.finalize();
+			}
+			catch (Throwable e) {
+				System.err.println("Error in MFA_ShopperManager finalize.");
+				e.printStackTrace();
+			}
 		}
 	}
 
@@ -175,6 +210,19 @@ public class MFA_ShopperManager<V> implements Runnable {
 			// empty complete additions to blocking queue
 			emptyCompletedBlockingQueueFutures();
 		}
+
+		/*
+		 * Complete all additions to the blocking queue before closing down
+		 */
+		while (completedBQAdditionsCount < completedFuturesCount) {
+			// ensure blockingqueue always full
+			fillBlockingQueue();
+			// empty complete additions to blocking queue
+			emptyCompletedBlockingQueueFutures();
+		}
+		
+		// close the object
+		close();
 	}
 
 	@Override
@@ -190,12 +238,20 @@ public class MFA_ShopperManager<V> implements Runnable {
 		return toString;
 	}
 
+	public ArrayList<String> getArrayListOfShoppers() {
+		return arrayListOfShoppers;
+	}
+
+	public int getCompletedBlockingQueueAdditions() {
+		return completedBQAdditionsCount;
+	}
+
 	public int getCompletedFutureCount() {
 		return completedFuturesCount;
 	}
 
-	public ArrayList<String> getArrayListOfShoppers() {
-		return arrayListOfShoppers;
+	public MF_ShopperDAO getShopperDAO() {
+		return shopperDAO;
 	}
 
 	/**

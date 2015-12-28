@@ -17,11 +17,22 @@ import com.marketflip.shared.shopper.MF_PricePoint;
  */
 public class MFA_ShopperCrawler implements Callable<MFA_ShopperCrawler> {
 
-	private ArrayList<MF_PricePoint> pricePointsArrayList;
+	private ArrayList<MF_PricePoint>	pricePointsArrayList;
+	private String						shopperEmail;
+
+	public MFA_ShopperCrawler() {
+		this.pricePointsArrayList = new ArrayList<MF_PricePoint>();
+	}
+
+	public MFA_ShopperCrawler(String shopperEmail) {
+		// TODO Change to Shopper class when class complete
+		this();
+		this.shopperEmail = shopperEmail;
+	}
 
 	// TODO ArrayList<MF_PricePoint> to send back
 	@Override
-	public MFA_ShopperCrawler call() throws Exception {
+	public MFA_ShopperCrawler call() {
 		// TODO Auto-generated method stub
 		return this;
 	}

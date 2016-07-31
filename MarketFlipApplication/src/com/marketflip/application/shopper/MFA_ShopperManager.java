@@ -11,6 +11,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 import com.marketflip.shared.shopper.MF_PricePoint;
+import com.marketflip.shared.shopper.MF_Shopper;
 import com.marketflip.shared.shopper.MF_ShopperDAO;
 
 /**
@@ -26,12 +27,12 @@ import com.marketflip.shared.shopper.MF_ShopperDAO;
  */
 public class MFA_ShopperManager implements Runnable {
 
-	private BlockingQueue<ArrayList<MF_PricePoint>>					bq;
+	private BlockingQueue<MFA_ShopperCrawler>						bqOfShopperCrawlersWithMatches;
 	private int														completedBQAdditionsCount;
 	private int														completedFuturesCount;
-	private ArrayList<String>										arrayListOfShoppers;						// TODO turn to shopper TODO get from database
-	private ArrayList<ArrayList<MF_PricePoint>>						arrayListOfPricePointsArrayListsPending;
-	private ArrayList<ArrayList<MF_PricePoint>>						arrayListOfPricePointsArrayListsInProgress;
+	private ArrayList<MF_Shopper>									arrayListOfShoppers;						// TODO turn to shopper TODO get from database
+	private ArrayList<MFA_ShopperCrawler>							arrayListOfShopperCrawlersPendingForBQ;
+	private ArrayList<MFA_ShopperCrawler>							arrayListOfShopperCrawlerToBQInProgress;
 	private ExecutorService											executor;
 	private ArrayList<Future<MFA_ShopperManager_BQAdditionFuture>>	arrayListOfBQFutures;
 	private ArrayList<Future<MFA_ShopperCrawler>>					arrayListOfCrawlerFutures;
@@ -42,12 +43,13 @@ public class MFA_ShopperManager implements Runnable {
 	public static final int											MFA_SHOPPER_MANAGER_MAX_BQ_THREAD_COUNT	= 2;
 
 	public MFA_ShopperManager() {
+		System.out.println("shoppermanager");
 		this.arrayListOfBQFutures = new ArrayList<Future<MFA_ShopperManager_BQAdditionFuture>>();
 		this.arrayListOfCrawlerFutures = new ArrayList<Future<MFA_ShopperCrawler>>();
-		this.arrayListOfPricePointsArrayListsInProgress = new ArrayList<ArrayList<MF_PricePoint>>();
-		this.arrayListOfPricePointsArrayListsPending = new ArrayList<ArrayList<MF_PricePoint>>();
-		this.arrayListOfShoppers = new ArrayList<String>();
-		this.bq = null;
+		this.arrayListOfShopperCrawlerToBQInProgress = new ArrayList<MFA_ShopperCrawler>();
+		this.arrayListOfShopperCrawlersPendingForBQ = new ArrayList<MFA_ShopperCrawler>();
+		this.arrayListOfShoppers = new ArrayList<MF_Shopper>();
+		this.bqOfShopperCrawlersWithMatches = null;
 		this.completedFuturesCount = 0;
 		this.executor = Executors.newFixedThreadPool(MFA_SHOPPER_MANAGER_MAX_THREAD_COUNT);
 		this.shopperDAO = null;
@@ -57,7 +59,7 @@ public class MFA_ShopperManager implements Runnable {
 
 	public MFA_ShopperManager(BlockingQueue bq) {
 		this();
-		this.bq = bq;
+		this.bqOfShopperCrawlersWithMatches = bq;
 	}
 
 	public MFA_ShopperManager(BlockingQueue bq, int shopperLimit) {
@@ -69,12 +71,14 @@ public class MFA_ShopperManager implements Runnable {
 		this(bq, shopperLimit);
 		if (isMock) {
 			for (int shoppers = 0; shoppers < shopperLimit; shoppers++) {
-				this.arrayListOfShoppers.add("shopper" + shoppers);
+				this.arrayListOfShoppers.add(
+						new MF_Shopper("shopper" + shoppers, "shopper" + shoppers + "@gmail.com"));
 			}
 			this.shopperDAO = new MF_ShopperDAO(true);
 		}
 		else {
 			this.shopperDAO = new MF_ShopperDAO(false);
+			this.arrayListOfShoppers = shopperDAO.getArrayListOfShoppers();
 		}
 	}
 
@@ -97,14 +101,15 @@ public class MFA_ShopperManager implements Runnable {
 		 */
 		// must iterate via FOR because using an iterator causing concurrency errors upon removal of future from arraylist
 		for (int index = arrayListOfBQFutures.size() - 1; index > -1; index--) {
-			Future<MFA_ShopperManager_BQAdditionFuture> future = arrayListOfBQFutures.get(index);
-			if (future.isDone()) {
+			if (arrayListOfBQFutures.get(index).isDone()) {
 				try {
+					Future<MFA_ShopperManager_BQAdditionFuture> future = arrayListOfBQFutures
+							.get(index);
 					MFA_ShopperManager_BQAdditionFuture completedFuture = future.get();
-					ArrayList<MF_PricePoint> pricePointArrayList = completedFuture
-							.getPricePointArrayList();
-					arrayListOfPricePointsArrayListsInProgress.remove(pricePointArrayList);
-					arrayListOfBQFutures.remove(future);
+					MFA_ShopperCrawler shopperCrawlerTransferred = completedFuture
+							.getShopperCrawler();
+					arrayListOfShopperCrawlerToBQInProgress.remove(shopperCrawlerTransferred);
+					arrayListOfBQFutures.remove(index);
 					completedBQAdditionsCount++;
 				}
 				catch (InterruptedException e) {
@@ -129,12 +134,10 @@ public class MFA_ShopperManager implements Runnable {
 		for (int index = arrayListOfCrawlerFutures.size() - 1; index > -1; index--) {
 			//			if (future.isDone()) {
 			if (arrayListOfCrawlerFutures.get(index).isDone()) {
+				Future<MFA_ShopperCrawler> future = arrayListOfCrawlerFutures.get(index);
+				MFA_ShopperCrawler transferCrawler = null;
 				try {
-					MFA_ShopperCrawler completedFuture = arrayListOfCrawlerFutures.get(index).get();
-					arrayListOfPricePointsArrayListsPending
-							.add(completedFuture.getPricePointsArrayList());
-					arrayListOfCrawlerFutures.remove(index);
-					completedFuturesCount++;
+					transferCrawler = future.get();
 				}
 				catch (InterruptedException e) {
 					// TODO Auto-generated catch block
@@ -144,7 +147,9 @@ public class MFA_ShopperManager implements Runnable {
 					// TODO Auto-generated catch block
 					e.printStackTrace();
 				}
-
+				arrayListOfShopperCrawlersPendingForBQ.add(transferCrawler);
+				arrayListOfCrawlerFutures.remove(index);
+				completedFuturesCount++;
 			}
 		}
 	}
@@ -152,15 +157,15 @@ public class MFA_ShopperManager implements Runnable {
 	private void fillBlockingQueue() {
 		// check if threads available && arrayLists ready for transfer && the blocking can assume more arrayLists
 		while (arrayListOfBQFutures.size() < MFA_SHOPPER_MANAGER_MAX_BQ_THREAD_COUNT
-				&& !arrayListOfPricePointsArrayListsPending.isEmpty()
-				&& bq.remainingCapacity() > 0) {
-			ArrayList<MF_PricePoint> transferPPAL = arrayListOfPricePointsArrayListsPending
+				&& !arrayListOfShopperCrawlersPendingForBQ.isEmpty()
+				&& bqOfShopperCrawlersWithMatches.remainingCapacity() > 0) {
+			MFA_ShopperCrawler shopperCrawlerForTransfer = arrayListOfShopperCrawlersPendingForBQ
 					.remove(0);
 			// GET the arrayList to create future for PUTTING to blocking queue 
-			arrayListOfBQFutures
-					.add(executor.submit(new MFA_ShopperManager_BQAdditionFuture(transferPPAL)));
+			arrayListOfBQFutures.add(executor
+					.submit(new MFA_ShopperManager_BQAdditionFuture(shopperCrawlerForTransfer)));
 			// REMOVE arrayList to ensure single future submissions 
-			arrayListOfPricePointsArrayListsInProgress.add(transferPPAL);
+			arrayListOfShopperCrawlerToBQInProgress.add(shopperCrawlerForTransfer);
 		}
 	}
 
@@ -188,7 +193,7 @@ public class MFA_ShopperManager implements Runnable {
 				super.finalize();
 			}
 			catch (Throwable e) {
-				System.err.println("Error in MFA_ShopperManager finalize.");
+				System.err.println("Error in MFA_NotificationManager finalize.");
 				e.printStackTrace();
 			}
 		}
@@ -220,7 +225,8 @@ public class MFA_ShopperManager implements Runnable {
 			// empty complete additions to blocking queue
 			emptyCompletedBlockingQueueFutures();
 		}
-		
+
+		System.out.println("shoppingmng shutdown after shopperCount: " + completedBQAdditionsCount);
 		// close the object
 		close();
 	}
@@ -228,17 +234,19 @@ public class MFA_ShopperManager implements Runnable {
 	@Override
 	public String toString() {
 		String toString;
-		if (bq == null) {
+		if (bqOfShopperCrawlersWithMatches == null) {
 			toString = "Instance of Market Flip Application Shopping Manager without parameters.";
 		}
 		else {
 			toString = "Instance of Market Flip Application Shopping Manager instantiated with blocking queue size: "
-					+ (bq.size() + bq.remainingCapacity()) + ".";
+					+ (bqOfShopperCrawlersWithMatches.size()
+							+ bqOfShopperCrawlersWithMatches.remainingCapacity())
+					+ ".";
 		}
 		return toString;
 	}
 
-	public ArrayList<String> getArrayListOfShoppers() {
+	public ArrayList<MF_Shopper> getArrayListOfShoppers() {
 		return arrayListOfShoppers;
 	}
 
@@ -264,16 +272,16 @@ public class MFA_ShopperManager implements Runnable {
 	private class MFA_ShopperManager_BQAdditionFuture
 			implements Callable<MFA_ShopperManager_BQAdditionFuture> {
 
-		private ArrayList<MF_PricePoint> pricePointArrayList;
+		private MFA_ShopperCrawler shopperCrawler;
 
 		/**
 		 * The purpose of this constructor is to send the result of a Shopper Crawler to the class
 		 * and wrap it as a callable to track its future progress.
 		 *
-		 * @param pricePointArrayList
+		 * @param shopperCrawler
 		 */
-		MFA_ShopperManager_BQAdditionFuture(ArrayList<MF_PricePoint> pricePointArrayList) {
-			this.pricePointArrayList = pricePointArrayList;
+		MFA_ShopperManager_BQAdditionFuture(MFA_ShopperCrawler shopperCrawler) {
+			this.shopperCrawler = shopperCrawler;
 		}
 
 		/**
@@ -284,12 +292,14 @@ public class MFA_ShopperManager implements Runnable {
 		 */
 		@Override
 		public MFA_ShopperManager_BQAdditionFuture call() throws Exception {
-			bq.put(pricePointArrayList);
+			if (shopperCrawler != null) {
+				bqOfShopperCrawlersWithMatches.put(shopperCrawler);
+			}
 			return this;
 		}
 
-		public ArrayList<MF_PricePoint> getPricePointArrayList() {
-			return pricePointArrayList;
+		public MFA_ShopperCrawler getShopperCrawler() {
+			return shopperCrawler;
 		}
 	}
 }

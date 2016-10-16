@@ -35,7 +35,8 @@ public class MFA_ShopperCrawler implements Callable<MFA_ShopperCrawler> {
 		this.arrayListOfPricePoints = new ArrayList<MF_PricePoint>();
 		this.hashMapOfMatches = new HashMap<MF_Product, MF_Price>();
 		this.shopperDAO = new MF_ShopperDAO(false);
-		this.productsDAO = new MF_ProductsDAO("testing");
+//		this.productsDAO = new MF_ProductsDAO("testing"); // testing used for original Proton but change to DataAccessObject forces to production
+		this.productsDAO = new MF_ProductsDAO("production"); 
 	}
 
 	public MFA_ShopperCrawler(String shopperEmail) {

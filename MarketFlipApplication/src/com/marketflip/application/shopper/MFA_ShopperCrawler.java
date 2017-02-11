@@ -35,8 +35,9 @@ public class MFA_ShopperCrawler implements Callable<MFA_ShopperCrawler> {
 		this.arrayListOfPricePoints = new ArrayList<MF_PricePoint>();
 		this.hashMapOfMatches = new HashMap<MF_Product, MF_Price>();
 		this.shopperDAO = new MF_ShopperDAO(false);
-//		this.productsDAO = new MF_ProductsDAO("testing"); // testing used for original Proton but change to DataAccessObject forces to production
-		this.productsDAO = new MF_ProductsDAO("production"); 
+		this.productsDAO = new MF_ProductsDAO("testing"); // testing used for original Proton but change to DataAccessObject forces to production
+//		this.productsDAO = new MF_ProductsDAO("production"); // 20170210 it makes more sense to force TesTING to work so we permanently never touch our production model
+		// TODO in terms of production vs testing DAO, it should be passed at the creation of this Crawler object in what environment the run operates.
 	}
 
 	public MFA_ShopperCrawler(String shopperEmail) {
